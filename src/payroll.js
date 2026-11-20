@@ -18,7 +18,7 @@ export const DEFAULT_INPUTS = {
   overtime: false, ordinaryHours: 0, restHours: 0, holidayHours: 0, holidayType: 'regularHoliday',
   ordinaryMultiplier: '', restMultiplier: '', holidayMultiplier: '',
   deductions: false, deductionAmount: 0,
-  companyPayroll: false, shiftMode: false, specialDays: 0, regularHolidayDays: 0,
+  companyPayroll: false, specialDays: 0, regularHolidayDays: 0,
   dailyExemptAllowance: 0, companyNightHours: 0, companyNightPremium: 0,
 };
 
@@ -86,19 +86,13 @@ export function calculate(inputs = {}, rules = DEFAULT_RULES) {
   const monthly = salary || dailyRate * days;
   const payFactor = periods ? 12 / periods : 1 / days;
   const contributionFactor = number(i.allocation, payFactor * 100, 0, 100) / 100;
-  const shifts = i.shiftCalculation || null;
-  const basic = shifts ? shifts.basic : round(companyPayroll ? dailyRate * (daysWorked ?? 0) : daysWorked == null
+  const basic = round(companyPayroll ? dailyRate * (daysWorked ?? 0) : daysWorked == null
     ? (frequency === 'daily' ? dailyRate : monthly * payFactor)
     : dailyRate * daysWorked);
-  const specialDays = companyPayroll && !shifts ? number(i.specialDays, 0, 0, daysWorked ?? 0) : 0;
-  const regularHolidayDays = companyPayroll && !shifts ? number(i.regularHolidayDays, 0, 0, (daysWorked ?? 0) - specialDays) : 0;
-  const specialPremium = shifts ? round(shifts.segments.reduce((n, s) => n + (s.type === 'specialHoliday' ? s.premium : s.type === 'specialRest' && !s.unpaid ? round(s.hours * s.hourlyRate * 0.3) : 0), 0)) : round(dailyRate * 0.30 * specialDays);
-  const regularPremium = shifts ? round(shifts.segments.reduce((n, s) => n + (s.type === 'regularHoliday' ? s.premium : s.type === 'regularRest' && !s.unpaid ? s.basic : 0), 0)) : round(dailyRate * regularHolidayDays);
-  const restPremium = shifts ? round(shifts.segments.filter(s => s.type === 'rest').reduce((n, s) => n + s.premium, 0)) : 0;
-  const overlapPremium = shifts ? round(shifts.segments.filter(s => s.type === 'regularRest' || s.type === 'specialRest').reduce((n, s) => n + s.premium, 0) -
-    shifts.segments.filter(s => s.type === 'regularRest' && !s.unpaid).reduce((n, s) => n + s.basic, 0) -
-    shifts.segments.filter(s => s.type === 'specialRest' && !s.unpaid).reduce((n, s) => n + round(s.hours * s.hourlyRate * 0.3), 0)) : 0;
-  const workingPremium = shifts ? round(shifts.premium - specialPremium - regularPremium - restPremium - overlapPremium) : 0;
+  const specialDays = companyPayroll ? number(i.specialDays, 0, 0, daysWorked ?? 0) : 0;
+  const regularHolidayDays = companyPayroll ? number(i.regularHolidayDays, 0, 0, (daysWorked ?? 0) - specialDays) : 0;
+  const specialPremium = round(dailyRate * 0.30 * specialDays);
+  const regularPremium = round(dailyRate * regularHolidayDays);
   const exemptAllowance = companyPayroll ? round(number(i.dailyExemptAllowance) * (daysWorked ?? 0)) : 0;
   const governmentHourly = number(i.hourlyRate, monthly / rules.governmentHourly.days / rules.governmentHourly.hours);
   const premiumHourly = government ? governmentHourly : hourlyRate;
@@ -107,7 +101,7 @@ export function calculate(inputs = {}, rules = DEFAULT_RULES) {
   const ordinaryMultiplier = number(i.ordinaryMultiplier, otRules.ordinary, government ? 1 : otRules.ordinary, 10);
   const restMultiplier = number(i.restMultiplier, otRules.rest, government ? 1 : otRules.rest, 10);
   const holidayMultiplier = number(i.holidayMultiplier, otRules[holidayType], government ? 1 : otRules[holidayType], 10);
-  const overtime = shifts ? shifts.overtime : i.overtime ? round(premiumHourly * (
+  const overtime = i.overtime ? round(premiumHourly * (
     number(i.ordinaryHours) * ordinaryMultiplier + number(i.restHours) * restMultiplier + number(i.holidayHours) * holidayMultiplier
   )) : 0;
   const nightRules = rules.night[government ? 'government' : 'private'];
@@ -117,7 +111,7 @@ export function calculate(inputs = {}, rules = DEFAULT_RULES) {
     ? number(i.companyNightHours, 0, 0, nightRules.maxHours) * (daysWorked ?? 0)
     : number(i.nightHours, 0, 0, nightRules.maxHours) * number(i.nightShifts);
   const companyNightPremium = number(i.companyNightPremium);
-  const night = shifts ? shifts.night : companyPayroll ? round(companyNightPremium * nightWork)
+  const night = companyPayroll ? round(companyNightPremium * nightWork)
     : i.night ? round(nightHourly * nightWork * nightRate / 100) : 0;
   const allowance = i.allowances ? round(number(i.allowanceAmount)) : 0;
   const taxableBonus = i.bonuses ? round(number(i.bonusAmount)) : 0;
@@ -125,9 +119,9 @@ export function calculate(inputs = {}, rules = DEFAULT_RULES) {
   const exemptBenefit = i.benefits ? round(number(i.exemptBenefit)) : 0;
   const bonusExempt = round(Math.min(qualifyingBonus, Math.max(0, rules.bonusExclusion - number(i.usedBonusExclusion))));
   const otherComp = sum(taxableBonus, qualifyingBonus, exemptBenefit);
-  const gross = sum(basic, allowance, overtime, night, otherComp, specialPremium, regularPremium, restPremium, overlapPremium, workingPremium, exemptAllowance);
+  const gross = sum(basic, allowance, overtime, night, otherComp, specialPremium, regularPremium, exemptAllowance);
   const estimatedInsurance = government ? monthly : round((frequency === 'daily' ? dailyRate * days : monthly) + (gross - basic));
-  const insuranceBasis = companyPayroll ? sum(basic, night, specialPremium, regularPremium, restPremium, overlapPremium, workingPremium, ...(shifts ? [overtime] : [])) : number(i.insuranceBasis, estimatedInsurance);
+  const insuranceBasis = companyPayroll ? sum(basic, night, specialPremium, regularPremium) : number(i.insuranceBasis, estimatedInsurance);
   const healthBasis = government ? number(i.healthBasis, monthly) : monthly;
   const hdmfBasis = government ? number(i.hdmfBasis, monthly + allowance) : monthly + allowance;
   const sss = !government && i.insurance && insuranceBasis > 0 ? sssContribution(round(insuranceBasis), rules.sss) : null;
@@ -162,8 +156,8 @@ export function calculate(inputs = {}, rules = DEFAULT_RULES) {
   });
   const contributions = sum(...shares.map(item => item.employee));
   const employerCost = sum(...shares.flatMap(item => [item.employer, item.ec]));
-  const minimumWageExempt = i.minimumWage ? sum(basic, overtime, night, specialPremium, regularPremium) : 0;
-  const exclusions = sum(bonusExempt, exemptBenefit, minimumWageExempt, exemptAllowance, companyPayroll && !i.minimumWage ? specialPremium : 0);
+  const minimumWageExempt = i.minimumWage ? sum(basic, overtime, night) : 0;
+  const exclusions = sum(bonusExempt, exemptBenefit, minimumWageExempt, exemptAllowance, specialPremium);
   const taxableBeforeContributions = Math.max(0, round(gross - exclusions));
   const taxable = Math.max(0, round(taxableBeforeContributions - contributions));
   const taxDetails = withholding(taxable, frequency, rules.tax);
@@ -174,11 +168,9 @@ export function calculate(inputs = {}, rules = DEFAULT_RULES) {
   return {
     name: i.name.trim(), government, companyPayroll, frequency, frequencyLabel, periodLabel, monthly, dailyRate, hourlyRate, daysWorked,
     contributionFactor, insuranceBasis, healthBasis, hdmfBasis, premiumHourly, sss, nightHourly, nightRate, nightWork, ordinaryMultiplier, restMultiplier, holidayMultiplier,
-    gross, contributions, employerCost, exclusions, taxableBeforeContributions, taxable, taxDetails, tax, totalDeductions, net, companyNightPremium, shifts,
+    gross, contributions, employerCost, exclusions, taxableBeforeContributions, taxable, taxDetails, tax, totalDeductions, net, companyNightPremium,
     earnings: [['Basic salary', basic], ['Allowances', allowance], ['Overtime pay', overtime], ['Night differential', night], ['Other compensation', otherComp],
-      ...(companyPayroll || shifts ? [['Special holiday premium', specialPremium], ['Regular holiday premium', regularPremium]] : []),
-      ...(shifts ? [['Rest-day premium', restPremium], ['Holiday/rest-day overlap premium', overlapPremium], ['Other day premium', workingPremium]] : []),
-      ...(companyPayroll ? [['Non-taxable daily allowance', exemptAllowance]] : [])],
+      ...(companyPayroll ? [['Special holiday premium', specialPremium], ['Regular holiday premium', regularPremium], ['Non-taxable daily allowance', exemptAllowance]] : [])],
     shares, otherDeduction,
   };
 }

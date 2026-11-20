@@ -2,7 +2,6 @@ import './style.css';
 import { DEFAULT_INPUTS, FREQUENCIES, calculate, peso, round, sssBracketLabel } from './payroll.js';
 import { DEFAULT_RULES, SOURCE_DATE, SOURCES, parseRules } from './schedules.js';
 import { reportRows, downloadPDF, downloadExcel } from './reports.js';
-import { calculateShifts, DAY_TYPES, ShiftError } from './shifts.js';
 import calculator from 'lucide-static/icons/calculator.svg?raw';
 import wallet from 'lucide-static/icons/wallet.svg?raw';
 import shield from 'lucide-static/icons/shield-check.svg?raw';
@@ -80,31 +79,12 @@ document.querySelector('#app').innerHTML = `
             <div class="rate-box" id="company-payroll">
               ${toggle('companyPayroll', 'Use company cutoff calculation', 'Private semi-monthly payroll: use actual days worked and apply company deduction rules.')}
               ${group('companyPayroll',
-                `<div data-company-legacy>${field('specialDays', 'Special non-working holidays worked', { max: 31, suffix: 'days' })}</div>` +
-                `<div data-company-legacy>${field('regularHolidayDays', 'Regular holidays worked', { max: 31, suffix: 'days' })}</div>` +
+                field('specialDays', 'Special non-working holidays worked', { max: 31, suffix: 'days' }) +
+                field('regularHolidayDays', 'Regular holidays worked', { max: 31, suffix: 'days' }) +
                 cash('dailyExemptAllowance', 'Non-taxable allowance per day') +
-                `<div data-company-legacy>${cash('companyNightPremium', 'Night differential per eligible hour')}</div>` +
-                `<div data-company-legacy>${field('companyNightHours', 'Eligible night hours per worked day', { max: 8, suffix: 'hrs' })}</div>`)}
-              <p class="hint" id="company-payroll-note">Enter only verified tax-exempt allowances. Without dated shifts, include holiday work in total days worked and enter the night differential per hour. With dated shifts, holiday and night premiums come from the shift entries instead.</p>
-            </div>
-          </section>
-          <section class="card" id="dated-shifts">
-            ${title('Dated shifts & premiums', 'Optional private-sector calculation by actual calendar date.', clock)}
-            ${toggle('shiftMode', 'Calculate from dated shifts', 'Replaces basic pay, holiday premium, night differential and overtime with the shift entries below.')}
-            <div id="shift-config" hidden>
-              <p class="hint">Enter paid work and any unpaid break for each shift. Assign each calendar date’s day type explicitly. Enter overtime times only when applicable. Only hours within the cutoff are included; hourly basic pay is counted once. Unpaid time is already excluded, not deducted again.</p>
-              <div class="fields shift-grid">
-                ${field('cutoffStart', 'Cutoff start', { type: 'date' })}
-                ${field('cutoffEnd', 'Cutoff end', { type: 'date' })}
-                ${field('shiftNightRate', 'Night differential rate', { suffix: '%', min: 10, max: 100 })}
-                ${field('absenceHours', 'Other unpaid absence / undertime', { suffix: 'hrs', max: 744 })}
-              </div>
-              <div id="shift-list"></div>
-              ${action('add-shift', 'Add shift', plus, 'secondary')}
-              <details class="option shift-rates"><summary>${icon(settings)}<span><strong>Day type multipliers</strong><small>Work rate and overtime factor; DOLE minimums shown</small></span>${icon(chevron)}</summary>
-                <div class="option-body"><p class="hint">Day multiplier includes the basic hourly rate. Overtime factor multiplies that day’s rate. Night differential is added on the resulting hourly rate. Adjust upward for your policy.</p><div id="shift-rates"></div></div>
-              </details>
-              <p class="hint">Private employees only. Holiday declarations, paid holiday entitlement, mixed day types, extra premiums and payroll cutoff policies must be confirmed. One unpaid break and one overtime interval per shift; split shifts if more are needed.</p>
+                cash('companyNightPremium', 'Night differential per eligible hour') +
+                field('companyNightHours', 'Eligible night hours per worked day', { max: 8, suffix: 'hrs' }))}
+              <p class="hint" id="company-payroll-note">Include holiday work in your total days worked. The calculator adds 30% for special non-working holidays and another 100% for regular holidays (200% total). Enter only eligible paid night hours, excluding unpaid breaks, and allowances verified as tax-exempt.</p>
             </div>
           </section>
           <section class="card" id="contributions">
@@ -170,7 +150,6 @@ document.querySelector('#app').innerHTML = `
           <p>SSS estimates monthly compensation as monthly base pay plus adjustments entered for this cutoff. For government employees, GSIS and PhilHealth use monthly basic pay, and Pag-IBIG uses monthly basic pay plus entered allowances. For private employees, the employee shares use the payroll overrides shown above; employer shares still use the statutory salary bases and limits. Monthly shares are prorated unless you enter a cutoff percentage.</p>
           <p>Monthly, semi-monthly, weekly and daily use BIR Annex E. Bi-weekly has no separate Annex E table: this estimate applies annual rates to 26 times the cutoff taxable pay, then divides the tax by 26. This is not a year-end reconciliation.</p>
           <p>The optional company cutoff calculation follows a payslip convention, not a general statutory rule. It uses cutoff earnings for employee contributions and excludes the special holiday premium from withholding. Confirm with your payroll team before relying on it.</p>
-          <p>Dated shifts are paid for actual paid hours. Specify each date’s classification and manually mark overtime; premiums follow the calendar date and night differential applies to the applicable premium and overtime rate. Unpaid absences and breaks are informational reductions from potential pay, not additional deductions. Unworked paid holidays and more complex entitlements require separate payroll review.</p>
           <p>Standard coverage only. Confirm special member rates, contribution exemptions, tax-exempt amounts, work schedules, and agency overtime authorizations and caps before using the estimate for payroll.</p>
         </div>
         <ul>${SOURCES.map(([label, url, note]) => `<li><a href="${url}" target="_blank" rel="noopener noreferrer">${label}${icon(arrow)}</a><small>${note}</small></li>`).join('')}</ul>
@@ -193,70 +172,6 @@ const storageKey = 'paycheck-ph-schedules-v1';
 let rules = DEFAULT_RULES;
 let current;
 let custom = false;
-let shiftError = '';
-let shiftId = 0;
-const dayOptions = [['', 'Select day type'], ...Object.entries(DAY_TYPES).map(([key, value]) => [key, value.label])];
-function addShift() {
-  const id = `shift${++shiftId}`;
-  const item = document.createElement('div');
-  item.className = 'shift-entry';
-  item.innerHTML = `<div class="shift-heading"><strong>Shift</strong><button type="button" class="button secondary remove-shift">Remove</button></div>
-    <div class="fields">
-      ${field(`${id}-date`, 'Work date', { type: 'date' })}
-      ${select(`${id}-type`, 'Work date type', dayOptions)}
-      ${field(`${id}-start`, 'Shift start', { type: 'time' })}
-      ${field(`${id}-end`, 'Shift end', { type: 'time' })}
-      <div class="wide">${select(`${id}-next`, 'Next calendar date type (overnight)', dayOptions)}</div>
-      ${field(`${id}-breakStart`, 'Unpaid break start', { type: 'time', optional: true })}
-      ${field(`${id}-breakEnd`, 'Unpaid break end', { type: 'time', optional: true })}
-      ${field(`${id}-overtimeStart`, 'Overtime start', { type: 'time', optional: true })}
-      ${field(`${id}-overtimeEnd`, 'Overtime end', { type: 'time', optional: true })}
-    </div>`;
-  item.dataset.shiftId = id;
-  $('shift-list').append(item);
-}
-function resetShiftInputs() {
-  $('shift-list').replaceChildren();
-  shiftId = 0;
-  addShift();
-  form.elements.cutoffStart.value = '';
-  form.elements.cutoffEnd.value = '';
-  form.elements.shiftNightRate.value = '10';
-  form.elements.absenceHours.value = '0';
-  for (const [key, rule] of Object.entries(DAY_TYPES)) {
-    form.elements[`rate-${key}`].value = rule.multiplier;
-    form.elements[`ot-${key}`].value = rule.overtime;
-  }
-}
-$('shift-rates').innerHTML = Object.entries(DAY_TYPES).map(([key, rule]) =>
-  `<div class="shift-rate"><strong>${rule.label}</strong><div class="fields">${field(`rate-${key}`, `Day multiplier (min ${rule.multiplier}×)`, { min: rule.multiplier, max: 10, suffix: '×' })}${field(`ot-${key}`, `Overtime factor (min ${rule.overtime}×)`, { min: rule.overtime, max: 10, suffix: '×' })}</div></div>`
-).join('');
-function readShiftCalculation(values) {
-  const shifts = [...$('shift-list').children].map(item => {
-    const id = item.dataset.shiftId;
-    const value = name => form.elements[`${id}-${name}`].value;
-    return { date: value('date'), dayType: value('type'), start: value('start'), end: value('end'),
-      nextDayType: value('next'), breakStart: value('breakStart'), breakEnd: value('breakEnd'),
-      overtimeStart: value('overtimeStart'), overtimeEnd: value('overtimeEnd') };
-  });
-  const numeric = input => input.value === '' ? NaN : Number(input.value);
-  const multipliers = Object.fromEntries(Object.keys(DAY_TYPES).map(key => [key, {
-    multiplier: numeric(form.elements[`rate-${key}`]), overtime: numeric(form.elements[`ot-${key}`]),
-  }]));
-  const baseline = calculate(values, rules);
-  return calculateShifts({
-    cutoffStart: form.elements.cutoffStart.value, cutoffEnd: form.elements.cutoffEnd.value, shifts, multipliers,
-    nightRate: numeric(form.elements.shiftNightRate), absenceHours: numeric(form.elements.absenceHours),
-    hourlyRate: baseline.hourlyRate,
-  });
-}
-$('add-shift').addEventListener('click', () => { addShift(); update(); });
-$('shift-list').addEventListener('click', event => {
-  const button = event.target.closest('.remove-shift');
-  if (!button) return;
-  button.closest('.shift-entry').remove();
-  update();
-});
 let startupError = '';
 try {
   const saved = localStorage.getItem(storageKey);
@@ -287,9 +202,6 @@ function renderDetails(r) {
     `${peso(t.fixed)} + (${peso(t.excess)} × ${t.rate * 100}%)${t.divisor > 1 ? `, then ÷ ${t.divisor}` : ''}`;
   const sss = r.sss;
   $('calc-details').innerHTML = `
-    ${r.shifts ? `<h4>Calendar-date shift calculation</h4>
-      <p class="hint">Paid ${r.shifts.paidHours} hours; unpaid breaks ${r.shifts.unpaidHours} hours; other unpaid absence/undertime ${r.shifts.absenceHours} hours. Unpaid time (${peso(r.shifts.unpaidValue)} at basic rate) is already excluded, not deducted again.</p>
-      ${r.shifts.segments.map(s => `<div class="shift-result"><strong>${s.date} · ${s.start}–${s.end} · ${s.label}</strong><small>${s.hours} hrs × ${peso(s.hourlyRate)} · day ${s.multiplier}×${s.overtimeFactor !== 1 ? ` · overtime ${s.overtimeFactor}×` : ''}${s.nightRate ? ` · night ${s.nightRate}%` : ''}${s.unpaid ? ' · unpaid' : ''}</small><small>Basic ${peso(s.basic)} + day premium ${peso(s.premium)} + overtime ${peso(s.overtime)} + night differential ${peso(s.night)} = ${peso(round(s.basic + s.premium + s.overtime + s.night))}</small></div>`).join('')}` : ''}
     <h4>Withholding tax</h4>
     ${row('Gross compensation', r.gross)}${row('Less tax-exempt compensation', r.exclusions)}
     ${r.companyPayroll ? row('Taxable pay before contributions', r.taxableBeforeContributions) : ''}
@@ -311,7 +223,7 @@ function renderDetails(r) {
       <tr><th scope="row">EC</th><td>${peso(0)}</td><td>${peso(sss.ec)}</td></tr>
       <tr class="table-total"><th scope="row">${r.companyPayroll ? 'Cutoff total' : 'Monthly total'}</th><td>${peso(sss.employee)}</td><td>${peso(round(sss.employer + sss.ec))}</td></tr>
       </tbody></table>` : ''}
-    ${!r.shifts && r.nightWork && (r.companyPayroll || form.elements.night.checked) ? `<h4>Night differential</h4><p class="hint">${r.companyPayroll
+    ${r.nightWork && (r.companyPayroll || form.elements.night.checked) ? `<h4>Night differential</h4><p class="hint">${r.companyPayroll
       ? `${peso(r.companyNightPremium)} premium per hour × ${r.nightWork} eligible hours`
       : `${peso(r.nightHourly)} × ${r.nightWork} eligible hours × ${r.nightRate}%`}</p>` : ''}
   `;
@@ -323,32 +235,8 @@ function update() {
     const control = form.elements.namedItem(name);
     values[name] = control.type === 'checkbox' ? control.checked : control.value;
   }
+  const r = current = calculate(values, rules);
   const f = form.elements;
-  const shiftEnabled = values.shiftMode && values.sector === 'private';
-  $('dated-shifts').hidden = values.sector !== 'private';
-  f.shiftMode.disabled = values.sector !== 'private';
-  $('shift-config').hidden = !shiftEnabled;
-  for (const control of $('shift-config').querySelectorAll('input, select, button')) control.disabled = !shiftEnabled;
-  $('night-pay').hidden = shiftEnabled || (values.sector === 'private' && values.frequency === 'semi' && values.companyPayroll);
-  $('overtime-pay').hidden = shiftEnabled;
-  for (const name of ['night', 'overtime']) f[name].disabled = shiftEnabled || (name === 'night' && values.sector === 'private' && values.frequency === 'semi' && values.companyPayroll);
-  let r;
-  try {
-    if (shiftEnabled) values.shiftCalculation = readShiftCalculation(values);
-    r = current = calculate(values, rules);
-    shiftError = '';
-  } catch (error) {
-    if (!(error instanceof ShiftError)) throw error;
-    shiftError = error.message;
-    current = null;
-    $('status').textContent = `Dated shifts: ${shiftError}`;
-    for (const id of ['net', 'gross', 'total-deductions']) $(id).textContent = '—';
-    for (const id of ['earnings', 'deductions', 'calc-details']) $(id).replaceChildren();
-    for (const id of ['print', 'pdf', 'excel']) $(id).disabled = true;
-    return false;
-  }
-  for (const id of ['print', 'pdf', 'excel']) $(id).disabled = false;
-  $('status').textContent = '';
   for (const group of form.querySelectorAll('[data-controlled]')) group.disabled = !values[group.dataset.controlled];
   const companyAvailable = !r.government && r.frequency === 'semi';
   $('company-payroll').hidden = !companyAvailable;
@@ -356,18 +244,13 @@ function update() {
   $('company-payroll-note').hidden = !r.companyPayroll;
   form.querySelector('[data-controlled="companyPayroll"]').hidden = !r.companyPayroll;
   form.querySelector('[data-controlled="companyPayroll"]').disabled = !r.companyPayroll;
-  for (const wrapper of form.querySelectorAll('[data-company-legacy]')) {
-    wrapper.hidden = shiftEnabled;
-    for (const input of wrapper.querySelectorAll('input')) input.disabled = shiftEnabled;
-  }
   f.daysWorked.required = r.companyPayroll;
-  const tooManyHolidays = r.companyPayroll && !shiftEnabled &&
+  const tooManyHolidays = r.companyPayroll &&
     (Number(values.specialDays) + Number(values.regularHolidayDays) > (r.daysWorked ?? 0));
   f.regularHolidayDays.setCustomValidity(tooManyHolidays ? 'Total holiday days cannot exceed days worked this pay period.' : '');
-  $('night-pay').hidden = r.companyPayroll || shiftEnabled;
-  f.night.disabled = r.companyPayroll || shiftEnabled;
-  form.querySelector('[data-controlled="night"]').disabled = r.companyPayroll || shiftEnabled || !values.night;
-  form.querySelector('[data-controlled="overtime"]').disabled = shiftEnabled || !values.overtime;
+  $('night-pay').hidden = r.companyPayroll;
+  f.night.disabled = r.companyPayroll;
+  form.querySelector('[data-controlled="night"]').disabled = r.companyPayroll || !values.night;
   for (const [fieldName, key] of [['insuranceBasis', 'insurance'], ['healthBasis', 'health'], ['hdmfBasis', 'hdmf']]) {
     f[fieldName].disabled = r.companyPayroll || !values[key] || (!r.government && key !== 'insurance');
   }
@@ -405,7 +288,7 @@ function update() {
   })) f[name].placeholder = Number(value.toFixed(2)).toLocaleString('en-PH', { maximumFractionDigits: 2 });
   $('net').textContent = peso(r.net);
   $('per-period').textContent = `/ ${r.periodLabel}`;
-  $('period-badge').textContent = r.shifts ? 'Dated shifts' : r.companyPayroll ? 'Company cutoff' : r.frequencyLabel;
+  $('period-badge').textContent = r.companyPayroll ? 'Company cutoff' : r.frequencyLabel;
   $('gross').textContent = peso(r.gross);
   $('total-deductions').textContent = peso(r.totalDeductions);
   $('earnings').innerHTML = r.earnings.map(([label, money], index) =>
@@ -422,7 +305,6 @@ form.addEventListener('input', () => {
   const tooManyHolidays = update();
   $('status').textContent = form.elements.daysWorked.validity.valueMissing ? 'Enter the days worked this pay period to calculate company basic pay.'
     : tooManyHolidays ? 'Total holiday days cannot exceed days worked this pay period. The estimate caps the holiday days used.'
-    : shiftError ? `Dated shifts: ${shiftError}`
     : Array.from(form.elements).some(control => !control.validity?.valid && control.willValidate)
       ? 'Check the highlighted fields. The estimate uses supported limits for out-of-range values.' : '';
 });
@@ -436,7 +318,6 @@ form.addEventListener('change', event => {
 });
 $('reset').addEventListener('click', () => {
   populate();
-  resetShiftInputs();
   for (const el of form.querySelectorAll('details')) el.open = false;
   $('details').open = false;
   update();
@@ -519,7 +400,6 @@ for (const [id, download] of [['pdf', downloadPDF], ['excel', downloadExcel]]) {
 }
 
 populate();
-resetShiftInputs();
 update();
 updateScheduleBadge();
 $('status').textContent = startupError;
