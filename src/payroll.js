@@ -1,4 +1,5 @@
 import { DEFAULT_RULES } from './schedules.js';
+import { calculateHolidayPremiums } from './holiday.js';
 
 export const FREQUENCIES = {
   monthly: ['Monthly', 'month', 12],
@@ -18,7 +19,7 @@ export const DEFAULT_INPUTS = {
   overtime: false, ordinaryHours: 0, restHours: 0, holidayHours: 0, holidayType: 'regularHoliday',
   ordinaryMultiplier: '', restMultiplier: '', holidayMultiplier: '',
   deductions: false, deductionAmount: 0,
-  companyPayroll: false, specialDays: 0, regularHolidayDays: 0,
+  companyPayroll: false, datedHolidayMode: false, specialDays: 0, regularHolidayDays: 0,
   dailyExemptAllowance: 0, companyNightHours: 0, companyNightPremium: 0,
 };
 
@@ -89,10 +90,13 @@ export function calculate(inputs = {}, rules = DEFAULT_RULES) {
   const basic = round(companyPayroll ? dailyRate * (daysWorked ?? 0) : daysWorked == null
     ? (frequency === 'daily' ? dailyRate : monthly * payFactor)
     : dailyRate * daysWorked);
-  const specialDays = companyPayroll ? number(i.specialDays, 0, 0, daysWorked ?? 0) : 0;
-  const regularHolidayDays = companyPayroll ? number(i.regularHolidayDays, 0, 0, (daysWorked ?? 0) - specialDays) : 0;
-  const specialPremium = round(dailyRate * 0.30 * specialDays);
-  const regularPremium = round(dailyRate * regularHolidayDays);
+  const holidayCalculation = companyPayroll && i.datedHolidayMode
+    ? calculateHolidayPremiums(i.holidayShifts ?? [], hourlyRate) : null;
+  const specialDays = companyPayroll && !i.datedHolidayMode ? number(i.specialDays, 0, 0, daysWorked ?? 0) : 0;
+  const regularHolidayDays = companyPayroll && !i.datedHolidayMode
+    ? number(i.regularHolidayDays, 0, 0, (daysWorked ?? 0) - specialDays) : 0;
+  const specialPremium = holidayCalculation?.specialPremium ?? round(dailyRate * 0.30 * specialDays);
+  const regularPremium = holidayCalculation?.regularPremium ?? round(dailyRate * regularHolidayDays);
   const exemptAllowance = companyPayroll ? round(number(i.dailyExemptAllowance) * (daysWorked ?? 0)) : 0;
   const governmentHourly = number(i.hourlyRate, monthly / rules.governmentHourly.days / rules.governmentHourly.hours);
   const premiumHourly = government ? governmentHourly : hourlyRate;
@@ -168,7 +172,7 @@ export function calculate(inputs = {}, rules = DEFAULT_RULES) {
   return {
     name: i.name.trim(), government, companyPayroll, frequency, frequencyLabel, periodLabel, monthly, dailyRate, hourlyRate, daysWorked,
     contributionFactor, insuranceBasis, healthBasis, hdmfBasis, premiumHourly, sss, nightHourly, nightRate, nightWork, ordinaryMultiplier, restMultiplier, holidayMultiplier,
-    gross, contributions, employerCost, exclusions, taxableBeforeContributions, taxable, taxDetails, tax, totalDeductions, net, companyNightPremium,
+    gross, contributions, employerCost, exclusions, taxableBeforeContributions, taxable, taxDetails, tax, totalDeductions, net, companyNightPremium, holidayCalculation,
     earnings: [['Basic salary', basic], ['Allowances', allowance], ['Overtime pay', overtime], ['Night differential', night], ['Other compensation', otherComp],
       ...(companyPayroll ? [['Special holiday premium', specialPremium], ['Regular holiday premium', regularPremium], ['Non-taxable daily allowance', exemptAllowance]] : [])],
     shares, otherDeduction,

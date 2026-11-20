@@ -27,6 +27,16 @@ export function reportRows(r, custom) {
       [r.companyPayroll ? 'SSS bracket applied to cutoff pay' : 'SSS monthly compensation bracket', sssBracketLabel(r.sss, amount => peso(amount).replace('₱', 'PHP '))],
       ['SSS monthly salary credit', r.sss.msc],
     ] : []),
+    ...(r.holidayCalculation ? [
+      ['DATED HOLIDAY PREMIUMS'],
+      ['Paid shift hours', r.holidayCalculation.paidHours],
+      ['Unpaid break hours excluded', r.holidayCalculation.unpaidBreakHours],
+      ...r.holidayCalculation.segments.flatMap(s => [
+        [`${s.date} ${s.start}-${s.end} ${s.label}`, `${s.hours} hrs | PHP ${s.hourlyRate.toFixed(2)}/hr base | ${s.multiplier}x | PHP ${(s.hourlyRate * s.multiplier).toFixed(2)}/hr total`],
+        ['Holiday premium only (basic pay already included)', s.premium],
+      ]),
+      ['Date-based holiday premium total', r.holidayCalculation.totalPremium],
+    ] : []),
     [r.companyPayroll ? 'Employer PhilHealth and Pag-IBIG allocation' : 'Monthly share applied', `${(r.contributionFactor * 100).toFixed(2)}%`],
     ['Note', 'Estimate only. Verify amounts with your employer.'],
   ];

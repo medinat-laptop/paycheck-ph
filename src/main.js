@@ -2,6 +2,7 @@ import './style.css';
 import { DEFAULT_INPUTS, FREQUENCIES, calculate, peso, round, sssBracketLabel } from './payroll.js';
 import { DEFAULT_RULES, SOURCE_DATE, SOURCES, parseRules } from './schedules.js';
 import { reportRows, downloadPDF, downloadExcel } from './reports.js';
+import { HolidayCalculationError } from './holiday.js';
 import calculator from 'lucide-static/icons/calculator.svg?raw';
 import wallet from 'lucide-static/icons/wallet.svg?raw';
 import shield from 'lucide-static/icons/shield-check.svg?raw';
@@ -79,8 +80,15 @@ document.querySelector('#app').innerHTML = `
             <div class="rate-box" id="company-payroll">
               ${toggle('companyPayroll', 'Use company cutoff calculation', 'Private semi-monthly payroll: use actual days worked and apply company deduction rules.')}
               ${group('companyPayroll',
-                field('specialDays', 'Special non-working holidays worked', { max: 31, suffix: 'days' }) +
-                field('regularHolidayDays', 'Regular holidays worked', { max: 31, suffix: 'days' }) +
+                `<div class="wide">${toggle('datedHolidayMode', 'Calculate holiday premiums by calendar date', 'Only changes holiday premiums. Basic pay, night differential, and other calculations stay unchanged.')}</div>
+                <div id="dated-holiday-fields" class="wide" hidden>
+                  <p class="hint">Enter each shift worked this cutoff. Shifts split at midnight; assign the type for each calendar date. Unpaid breaks are excluded. The hourly basic pay remains in Basic salary; only the additional holiday premium is calculated here.</p>
+                  <div id="holiday-shift-list"></div>${action('add-holiday-shift', 'Add holiday shift', plus, 'secondary')}
+                </div>
+                <div id="legacy-holiday-fields" class="fields">
+                  ${field('specialDays', 'Special non-working holidays worked', { max: 31, suffix: 'days' })}
+                  ${field('regularHolidayDays', 'Regular holidays worked', { max: 31, suffix: 'days' })}
+                </div>` +
                 cash('dailyExemptAllowance', 'Non-taxable allowance per day') +
                 cash('companyNightPremium', 'Night differential per eligible hour') +
                 field('companyNightHours', 'Eligible night hours per worked day', { max: 8, suffix: 'hrs' }))}
@@ -172,6 +180,40 @@ const storageKey = 'paycheck-ph-schedules-v1';
 let rules = DEFAULT_RULES;
 let current;
 let custom = false;
+let holidayError = '';
+let holidayShiftId = 0;
+const holidayDayOptions = [['', 'Select date type'], ['ordinary', 'Regular working day'],
+  ['specialHoliday', 'Special non-working holiday'], ['regularHoliday', 'Regular holiday']];
+function addHolidayShift() {
+  const id = `holiday-shift-${++holidayShiftId}`;
+  const item = document.createElement('div');
+  item.className = 'holiday-shift-entry';
+  item.dataset.holidayShiftId = id;
+  item.innerHTML = `<div class="shift-heading"><strong>Holiday shift</strong><button type="button" class="button secondary remove-holiday-shift">Remove</button></div>
+    <div class="fields">
+      ${field(`${id}-date`, 'Work date', { type: 'date' })}
+      ${select(`${id}-type`, 'Work date type', holidayDayOptions)}
+      ${field(`${id}-start`, 'Shift start', { type: 'time' })}
+      ${field(`${id}-end`, 'Shift end', { type: 'time' })}
+      ${select(`${id}-next`, 'Next calendar date type (overnight)', holidayDayOptions)}
+      ${field(`${id}-breakStart`, 'Unpaid break start', { type: 'time', optional: true })}
+      ${field(`${id}-breakEnd`, 'Unpaid break end', { type: 'time', optional: true })}
+    </div>`;
+  $('holiday-shift-list').append(item);
+}
+function resetHolidayShiftInputs() {
+  $('holiday-shift-list').replaceChildren();
+  holidayShiftId = 0;
+  addHolidayShift();
+}
+function readHolidayShifts() {
+  return [...$('holiday-shift-list').children].map(item => {
+    const id = item.dataset.holidayShiftId;
+    const value = name => form.elements[`${id}-${name}`].value;
+    return { date: value('date'), dayType: value('type'), start: value('start'), end: value('end'),
+      nextDayType: value('next'), breakStart: value('breakStart'), breakEnd: value('breakEnd') };
+  });
+}
 let startupError = '';
 try {
   const saved = localStorage.getItem(storageKey);
@@ -202,6 +244,10 @@ function renderDetails(r) {
     `${peso(t.fixed)} + (${peso(t.excess)} × ${t.rate * 100}%)${t.divisor > 1 ? `, then ÷ ${t.divisor}` : ''}`;
   const sss = r.sss;
   $('calc-details').innerHTML = `
+    ${r.holidayCalculation ? `<h4>Date-based holiday premium</h4>
+      <p class="hint">Each shift is split at calendar midnight. Basic hourly pay is already included in Basic salary; only the additional holiday premium is added here. Break time is excluded.</p>
+      ${r.holidayCalculation.segments.map(s => `<div class="holiday-result"><strong>${s.date} · ${s.start}–${s.end} · ${s.label}</strong><small>${s.hours} paid hrs × ${peso(s.hourlyRate)}/hr × ${s.multiplier}× = ${peso(s.hourlyRate * s.multiplier)}/hr total rate</small><small>Holiday premium: ${s.hours} × ${peso(s.hourlyRate)} × ${s.multiplier - 1} = ${peso(s.premium)}</small></div>`).join('')}
+      <p class="hint">Paid hours: ${r.holidayCalculation.paidHours}; unpaid break: ${r.holidayCalculation.unpaidBreakHours} hrs. Total additional holiday premium: ${peso(r.holidayCalculation.totalPremium)}.</p>` : ''}
     <h4>Withholding tax</h4>
     ${row('Gross compensation', r.gross)}${row('Less tax-exempt compensation', r.exclusions)}
     ${r.companyPayroll ? row('Taxable pay before contributions', r.taxableBeforeContributions) : ''}
@@ -235,7 +281,22 @@ function update() {
     const control = form.elements.namedItem(name);
     values[name] = control.type === 'checkbox' ? control.checked : control.value;
   }
-  const r = current = calculate(values, rules);
+  if (values.companyPayroll && values.datedHolidayMode) values.holidayShifts = readHolidayShifts();
+  let r;
+  holidayError = '';
+  try {
+    r = current = calculate(values, rules);
+  } catch (error) {
+    if (!(error instanceof HolidayCalculationError)) throw error;
+    holidayError = error.message;
+    current = null;
+    $('status').textContent = `Date-based holiday calculation: ${holidayError}`;
+    for (const id of ['net', 'gross', 'total-deductions']) $(id).textContent = '—';
+    for (const id of ['earnings', 'deductions', 'calc-details']) $(id).replaceChildren();
+    for (const id of ['print', 'pdf', 'excel']) $(id).disabled = true;
+    return false;
+  }
+  for (const id of ['print', 'pdf', 'excel']) $(id).disabled = false;
   const f = form.elements;
   for (const group of form.querySelectorAll('[data-controlled]')) group.disabled = !values[group.dataset.controlled];
   const companyAvailable = !r.government && r.frequency === 'semi';
@@ -244,8 +305,15 @@ function update() {
   $('company-payroll-note').hidden = !r.companyPayroll;
   form.querySelector('[data-controlled="companyPayroll"]').hidden = !r.companyPayroll;
   form.querySelector('[data-controlled="companyPayroll"]').disabled = !r.companyPayroll;
+  $('dated-holiday-fields').hidden = !r.companyPayroll || !values.datedHolidayMode;
+  $('legacy-holiday-fields').hidden = values.datedHolidayMode;
+  f.specialDays.disabled = !r.companyPayroll || values.datedHolidayMode;
+  f.regularHolidayDays.disabled = !r.companyPayroll || values.datedHolidayMode;
+  for (const control of $('dated-holiday-fields').querySelectorAll('input, select, button')) {
+    control.disabled = !r.companyPayroll || !values.datedHolidayMode;
+  }
   f.daysWorked.required = r.companyPayroll;
-  const tooManyHolidays = r.companyPayroll &&
+  const tooManyHolidays = r.companyPayroll && !values.datedHolidayMode &&
     (Number(values.specialDays) + Number(values.regularHolidayDays) > (r.daysWorked ?? 0));
   f.regularHolidayDays.setCustomValidity(tooManyHolidays ? 'Total holiday days cannot exceed days worked this pay period.' : '');
   $('night-pay').hidden = r.companyPayroll;
@@ -305,6 +373,7 @@ form.addEventListener('input', () => {
   const tooManyHolidays = update();
   $('status').textContent = form.elements.daysWorked.validity.valueMissing ? 'Enter the days worked this pay period to calculate company basic pay.'
     : tooManyHolidays ? 'Total holiday days cannot exceed days worked this pay period. The estimate caps the holiday days used.'
+    : holidayError ? `Date-based holiday calculation: ${holidayError}`
     : Array.from(form.elements).some(control => !control.validity?.valid && control.willValidate)
       ? 'Check the highlighted fields. The estimate uses supported limits for out-of-range values.' : '';
 });
@@ -318,10 +387,18 @@ form.addEventListener('change', event => {
 });
 $('reset').addEventListener('click', () => {
   populate();
+  resetHolidayShiftInputs();
   for (const el of form.querySelectorAll('details')) el.open = false;
   $('details').open = false;
   update();
   $('status').textContent = 'Calculator reset to the sample salary.';
+});
+$('add-holiday-shift').addEventListener('click', () => { addHolidayShift(); update(); });
+$('holiday-shift-list').addEventListener('click', event => {
+  const button = event.target.closest('.remove-holiday-shift');
+  if (!button) return;
+  button.closest('.holiday-shift-entry').remove();
+  update();
 });
 
 for (const link of document.querySelectorAll('.sidebar nav a')) {
@@ -400,6 +477,7 @@ for (const [id, download] of [['pdf', downloadPDF], ['excel', downloadExcel]]) {
 }
 
 populate();
+resetHolidayShiftInputs();
 update();
 updateScheduleBadge();
 $('status').textContent = startupError;
