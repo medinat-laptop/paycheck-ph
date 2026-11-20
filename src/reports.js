@@ -28,6 +28,17 @@ export function reportRows(r, custom) {
       ['SSS monthly salary credit', r.sss.msc],
     ] : []),
     [r.companyPayroll ? 'Employer PhilHealth and Pag-IBIG allocation' : 'Monthly share applied', `${(r.contributionFactor * 100).toFixed(2)}%`],
+    ...(r.shifts ? [
+      ['DATED SHIFT CALCULATION'],
+      ['Paid hours', String(r.shifts.paidHours)],
+      ['Unpaid break hours', String(r.shifts.unpaidHours)],
+      ['Unpaid absence / undertime hours', String(r.shifts.absenceHours)],
+      ['Unpaid time at basic rate (already excluded)', r.shifts.unpaidValue],
+      ...r.shifts.segments.flatMap(s => [
+        [`${s.date} ${s.start}-${s.end} ${s.label}`, `${s.hours} hrs | PHP ${s.hourlyRate.toFixed(2)}/hr | ${s.multiplier}x | OT ${s.overtimeFactor}x | night ${s.nightRate}%${s.unpaid ? ' | unpaid' : ''}`],
+        ['Basic / day premium / overtime / night', [s.basic, s.premium, s.overtime, s.night].map(n => `PHP ${n.toFixed(2)}`).join(' / ')],
+      ]),
+    ] : []),
     ['Note', 'Estimate only. Verify amounts with your employer.'],
   ];
 }
@@ -50,7 +61,8 @@ export async function downloadPDF(r, custom) {
     pdf.setFontSize(10);
     const text = typeof value === 'number' ? peso(value).replace('₱', 'PHP ') : value || '';
     const lines = pdf.splitTextToSize(text, 100);
-    const height = Math.max(6.7, lines.length * 4.5 + 2);
+    const labelLines = pdf.splitTextToSize(label, 72);
+    const height = Math.max(6.7, Math.max(lines.length, labelLines.length) * 4.5 + 2);
     if (y + height > 282) {
       pdf.addPage();
       heading();
@@ -62,7 +74,7 @@ export async function downloadPDF(r, custom) {
     }
     pdf.setTextColor(23, 36, 57);
     pdf.setFont('helvetica', value === undefined || label === 'NET TAKE-HOME PAY' ? 'bold' : 'normal');
-    pdf.text(label, 17, y);
+    pdf.text(labelLines, 17, y);
     if (text) pdf.text(lines, 193, y, { align: 'right' });
     y += height;
   }

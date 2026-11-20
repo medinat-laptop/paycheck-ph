@@ -92,6 +92,13 @@ fieldset { margin: 0; border: 0; padding: 0; min-width: 0; }
 .rate-box { margin-top: 14px; border: 1px solid #e6ecf2; padding: 12px; border-radius: 9px; background: #f8fafc; gap: 8px 10px; }
 #company-payroll[hidden], #company-payroll fieldset[hidden] { display: none; }
 #company-payroll-note { margin-top: 8px; }
+#dated-shifts[hidden], #shift-config[hidden], [data-company-legacy][hidden] { display: none; }
+.shift-grid, .shift-entry, .shift-rates { margin-top: 12px; }
+.shift-entry, .shift-rate { padding: 10px; border: 1px solid var(--line); border-radius: 8px; margin-bottom: 10px; }
+.shift-heading { display: flex; justify-content: space-between; align-items: center; margin-bottom: 9px; font-size: 13px; }
+.shift-rate > strong { display: block; font-size: 12px; margin-bottom: 8px; }
+.shift-result { padding: 8px 0; border-bottom: 1px solid var(--line); font-size: 11px; line-height: 1.5; overflow-wrap: anywhere; }
+.shift-result small { display: block; color: var(--muted); font-size: 11px; }
 .hint { color: var(--muted); font-size: 11px; line-height: 1.55; }
 .toggle { display: flex; align-items: center; justify-content: space-between; gap: 10px; min-height: 45px; font-size: 13px; }
 .toggle small { display: block; margin-top: 3px; font-size: 11px; color: var(--muted); line-height: 1.35; }
